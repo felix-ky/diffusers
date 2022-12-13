@@ -168,3 +168,4 @@ tags
 *.mp4
 examples/dreambooth/outputs
 examples/dreambooth/imgs
+examples/dreambooth/demos
