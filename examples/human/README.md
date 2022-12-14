@@ -19,3 +19,14 @@ Then run the training script
 ```
 ./train.sh
 ```
+
+## TODOs
+
+- [ ] tune lr schedules and optimizer hyperparams
+- [ ] use whole the COCO Densepose dataset (by generating samples OTF)
+- [ ] instance-aware random crop
+- [ ] add uv coordinate conditions with densepose
+- [ ] prompt tuning/adapter
+- [ ] example prompt/text prompt engineering
+- [ ] 3D conditions like apple neuman-ml
+

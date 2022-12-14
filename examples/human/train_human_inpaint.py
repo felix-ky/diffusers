@@ -27,7 +27,8 @@ from diffusers.optimization import get_scheduler
 from diffusers.utils import check_min_version
 from huggingface_hub import HfFolder, Repository, whoami
 from PIL import Image, ImageDraw
-from torchvision.prototype import transforms
+from torchvision.prototype import transforms  # TODO: migrate to pytorch 2.0 for easy transform impl
+# from torchvision import transforms
 from tqdm.auto import tqdm
 from transformers import CLIPTextModel, CLIPTokenizer
 
@@ -39,16 +40,23 @@ logger = get_logger(__name__)
 
 
 def prepare_mask_and_masked_image(image, mask):
+    """
+    args:
+        image: PIL image
+        mask: torch tensor
+
+    TODO: reuse instance images to avoid redundancy
+    """
     image = np.array(image.convert("RGB"))
     image = image[None].transpose(0, 3, 1, 2)
     image = torch.from_numpy(image).to(dtype=torch.float32) / 127.5 - 1.0
 
-    mask = np.array(mask.convert("L"))
-    mask = mask.astype(np.float32) / 255.0
-    mask = mask[None, None]
+    # mask = np.array(mask.convert("L"))
+    # mask = mask.astype(np.float32) / 255.0
+    mask = mask[None]
     mask[mask < 0.5] = 0
     mask[mask >= 0.5] = 1
-    mask = torch.from_numpy(mask)
+    # mask = torch.from_numpy(mask)
 
     masked_image = image * (mask < 0.5)
 
@@ -112,7 +120,7 @@ def parse_args():
     parser.add_argument(
         "--instance_prompt",
         type=str,
-        default=None,
+        default="a photo of a coco person",
         help="The prompt with identifier specifying the instance",
     )
     parser.add_argument(
@@ -269,7 +277,6 @@ class HumanDataset(Dataset):
     def __init__(
         self,
         instance_data_root,
-        mask_data_root,
         instance_prompt,
         tokenizer,
         class_data_root=None,
@@ -303,7 +310,7 @@ class HumanDataset(Dataset):
 
         self.image_transforms_resize_and_crop = transforms.Compose(
             [
-                transforms.Resize(size, interpolation=transforms.InterpolationMode.BILINEAR),
+                transforms.RandomShortestSize(size+3), # TODO: avoid min size failure
                 transforms.CenterCrop(size) if center_crop else transforms.RandomCrop(size),
             ]
         )
@@ -315,26 +322,40 @@ class HumanDataset(Dataset):
             ]
         )
 
+        self.mask_transforms = transforms.Compose(
+            [
+                transforms.ToTensor(),
+            ]
+        )
+
     def __len__(self):
         return self._length
 
     def __getitem__(self, index):
         example = {}
-        instance_image = Image.open(self.instance_images_path[index % self.num_instance_images])
+        # get mask image
+        mask_path = self.instance_images_path[index % self.num_instance_images]
+        mask = Image.open(mask_path)
+
+        # TODO: now the instance path is hard coded to be under masks parent dir, should change
+        image_path = str(mask_path).replace("masks", "images")
+        instance_image = Image.open(image_path)
         if not instance_image.mode == "RGB":
             instance_image = instance_image.convert("RGB")
-        instance_image = self.image_transforms_resize_and_crop(instance_image)
+        
+        instance_image, mask = self.image_transforms_resize_and_crop(instance_image, mask)
 
         example["PIL_images"] = instance_image
+        example["masks"] = self.mask_transforms(mask)
         example["instance_images"] = self.image_transforms(instance_image)
-
+        
         example["instance_prompt_ids"] = self.tokenizer(
             self.instance_prompt,
             padding="do_not_pad",
             truncation=True,
             max_length=self.tokenizer.model_max_length,
         ).input_ids
-
+        
         if self.class_data_root:
             raise Exception("Class images not supported.")
             class_image = Image.open(self.class_images_path[index % self.num_class_images])
@@ -540,10 +561,14 @@ def main():
 
         masks = []
         masked_images = []
+
+        # TODO: move this to the dataloader for potential speedup
+        # or at least batchify this (loop is slow)
         for example in examples:
             pil_image = example["PIL_images"]
+            mask = example["masks"]
             # generate a random mask
-            mask = random_mask(pil_image.size, 1, False)
+            # mask = random_mask(pil_image.size, 1, False)
             # prepare mask and masked image
             mask, masked_image = prepare_mask_and_masked_image(pil_image, mask)
 
@@ -551,6 +576,7 @@ def main():
             masked_images.append(masked_image)
 
         if args.with_prior_preservation:
+            raise Exception("Prior preservation not supported")
             for pil_image in pior_pil:
                 # generate a random mask
                 mask = random_mask(pil_image.size, 1, False)
@@ -746,6 +772,25 @@ def main():
 
     accelerator.end_training()
 
+def test_dataloader():
+    train_dataset = HumanDataset(
+        instance_data_root="data/densepose/masks",
+        instance_prompt="a photo of a coco person",
+        class_data_root=None,
+        class_prompt=None,
+        tokenizer=None,
+        size=512,
+        center_crop=False,
+    )
+    for i in range(10):
+        a = train_dataset[i]
+        pil_image = a['PIL_images']
+        mask = a['masks']
+        mask, masked_image = prepare_mask_and_masked_image(pil_image, mask)
+        pil_image.save('i_{}.png'.format(i))
+        Image.fromarray(mask[0][0].bool().numpy()).save('m_{}.png'.format(i))
+        Image.fromarray(((masked_image[0].numpy().transpose(1, 2, 0) + 1) * 127.5).astype(np.uint8)).save('mi_{}.png'.format(i))
 
 if __name__ == "__main__":
+    #test_dataloader()
     main()
