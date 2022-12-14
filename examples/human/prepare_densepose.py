@@ -1,4 +1,4 @@
-import json
+import shutil
 import numpy as np
 import os.path as osp
 from PIL import Image
@@ -147,7 +147,17 @@ def main():
         mask = mask_util.decode(rle).astype(np.bool)
         im = Image.fromarray(mask)
         # TODO: maybe add erosion to cover the whole area
-        im.save(osp.join(output_path, dataset_dict['file_name']))
+        file_name = dataset_dict['file_name'].split('_')[-1]
+        im.save(osp.join(output_path, file_name))
+
+        # copy COCO images to local dirs
+        cocodir = osp.join('data/coco/train2017', file_name) 
+        targetdir = osp.join('data/densepose/images', file_name) 
+        shutil.copyfile(cocodir, targetdir)
+
+        # only create 600 images
+        if i >= 600:
+            break
 
         # the RLE masks are smoother but not tight 
         # rles = anno["dp_masks"]

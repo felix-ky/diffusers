@@ -27,7 +27,7 @@ from diffusers.optimization import get_scheduler
 from diffusers.utils import check_min_version
 from huggingface_hub import HfFolder, Repository, whoami
 from PIL import Image, ImageDraw
-from torchvision import transforms
+from torchvision.prototype import transforms
 from tqdm.auto import tqdm
 from transformers import CLIPTextModel, CLIPTokenizer
 
@@ -269,6 +269,7 @@ class HumanDataset(Dataset):
     def __init__(
         self,
         instance_data_root,
+        mask_data_root,
         instance_prompt,
         tokenizer,
         class_data_root=None,
@@ -290,6 +291,7 @@ class HumanDataset(Dataset):
         self._length = self.num_instance_images
 
         if class_data_root is not None:
+            raise Exception("Class images not supported")
             self.class_data_root = Path(class_data_root)
             self.class_data_root.mkdir(parents=True, exist_ok=True)
             self.class_images_path = list(self.class_data_root.iterdir())
@@ -334,6 +336,7 @@ class HumanDataset(Dataset):
         ).input_ids
 
         if self.class_data_root:
+            raise Exception("Class images not supported.")
             class_image = Image.open(self.class_images_path[index % self.num_class_images])
             if not class_image.mode == "RGB":
                 class_image = class_image.convert("RGB")
@@ -401,6 +404,7 @@ def main():
         set_seed(args.seed)
 
     if args.with_prior_preservation:
+        raise Exception("Prior preservation not supported.")
         class_images_dir = Path(args.class_data_dir)
         if not class_images_dir.exists():
             class_images_dir.mkdir(parents=True)
@@ -513,7 +517,7 @@ def main():
 
     noise_scheduler = DDPMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
 
-    train_dataset = DreamBoothDataset(
+    train_dataset = HumanDataset(
         instance_data_root=args.instance_data_dir,
         instance_prompt=args.instance_prompt,
         class_data_root=args.class_data_dir if args.with_prior_preservation else None,
