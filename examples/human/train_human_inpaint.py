@@ -278,7 +278,7 @@ class HumanDataset(Dataset):
         self,
         instance_data_root,
         instance_prompt,
-        tokenizer,
+        # tokenizer,
         class_data_root=None,
         class_prompt=None,
         size=512,
@@ -286,7 +286,7 @@ class HumanDataset(Dataset):
     ):
         self.size = size
         self.center_crop = center_crop
-        self.tokenizer = tokenizer
+        # self.tokenizer = tokenizer
 
         self.instance_data_root = Path(instance_data_root)
         if not self.instance_data_root.exists():
@@ -349,12 +349,13 @@ class HumanDataset(Dataset):
         example["masks"] = self.mask_transforms(mask)
         example["instance_images"] = self.image_transforms(instance_image)
         
-        example["instance_prompt_ids"] = self.tokenizer(
-            self.instance_prompt,
-            padding="do_not_pad",
-            truncation=True,
-            max_length=self.tokenizer.model_max_length,
-        ).input_ids
+        # pre load the fix prompt to avoid loading clip
+        # example["instance_prompt_ids"] = self.tokenizer(
+        #     self.instance_prompt,
+        #     padding="do_not_pad",
+        #     truncation=True,
+        #     max_length=self.tokenizer.model_max_length,
+        # ).input_ids
         
         if self.class_data_root:
             raise Exception("Class images not supported.")
@@ -525,8 +526,10 @@ def main():
     else:
         optimizer_class = torch.optim.AdamW
 
+    # disable text_encoder
     params_to_optimize = (
-        itertools.chain(unet.parameters(), text_encoder.parameters()) if args.train_text_encoder else unet.parameters()
+        #itertools.chain(unet.parameters(), text_encoder.parameters()) if args.train_text_encoder else unet.parameters()
+        itertools.chain(unet.parameters())
     )
     optimizer = optimizer_class(
         params_to_optimize,
@@ -543,13 +546,14 @@ def main():
         instance_prompt=args.instance_prompt,
         class_data_root=args.class_data_dir if args.with_prior_preservation else None,
         class_prompt=args.class_prompt,
-        tokenizer=tokenizer,
+        # tokenizer=tokenizer,
         size=args.resolution,
         center_crop=args.center_crop,
     )
 
     def collate_fn(examples):
-        input_ids = [example["instance_prompt_ids"] for example in examples]
+        # prompt input disabled
+        # input_ids = [example["instance_prompt_ids"] for example in examples]
         pixel_values = [example["instance_images"] for example in examples]
 
         # Concat class and instance examples for prior preservation.
@@ -589,10 +593,12 @@ def main():
         pixel_values = torch.stack(pixel_values)
         pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
 
-        input_ids = tokenizer.pad({"input_ids": input_ids}, padding=True, return_tensors="pt").input_ids
+        # input_ids = tokenizer.pad({"input_ids": input_ids}, padding=True, return_tensors="pt").input_ids
         masks = torch.stack(masks)
         masked_images = torch.stack(masked_images)
-        batch = {"input_ids": input_ids, "pixel_values": pixel_values, "masks": masks, "masked_images": masked_images}
+        # prompt input disabled
+        # batch = {"input_ids": input_ids, "pixel_values": pixel_values, "masks": masks, "masked_images": masked_images}
+        batch = {"pixel_values": pixel_values, "masks": masks, "masked_images": masked_images}
         return batch
 
     train_dataloader = torch.utils.data.DataLoader(
@@ -614,6 +620,7 @@ def main():
     )
 
     if args.train_text_encoder:
+        raise Exception("Text encoder diabled")
         unet, text_encoder, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
             unet, text_encoder, optimizer, train_dataloader, lr_scheduler
         )
@@ -632,8 +639,9 @@ def main():
     # For mixed precision training we cast the text_encoder and vae weights to half-precision
     # as these models are only used for inference, keeping weights in full precision is not required.
     vae.to(accelerator.device, dtype=weight_dtype)
-    if not args.train_text_encoder:
-        text_encoder.to(accelerator.device, dtype=weight_dtype)
+    # Text encoder disabled for now
+    # if not args.train_text_encoder:
+    #    text_encoder.to(accelerator.device, dtype=weight_dtype)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -646,6 +654,23 @@ def main():
     # The trackers initializes automatically on the main process.
     if accelerator.is_main_process:
         accelerator.init_trackers("dreambooth", config=vars(args))
+
+    # pre load the text encoder result and release text_encoder
+    input_ids = tokenizer(
+         args.instance_prompt,
+         padding="do_not_pad",
+         truncation=True,
+         max_length=tokenizer.model_max_length,
+    ).input_ids
+    # make this batch size one. TODO: repeat batch size times if cannot broadcast
+    input_ids = [input_ids]
+    input_ids = tokenizer.pad({"input_ids": input_ids}, padding=True, return_tensors="pt").input_ids
+    # input_ids: 
+    # tensor([[49406,   320,  1125,   539,   320, 13316,  2533, 49407]],
+    #        device='cuda:0')
+    encoder_hidden_states = text_encoder(input_ids)[0].cuda().to(dtype=weight_dtype)
+    # it seems that text_encoder is not loaded into gpu and we have to save it for the pipeline
+    # del text_encoder
 
     # Train!
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
@@ -686,7 +711,7 @@ def main():
                         for mask in masks
                     ]
                 )
-                mask = mask.reshape(-1, 1, args.resolution // 8, args.resolution // 8)
+                mask = mask.reshape(-1, 1, args.resolution // 8, args.resolution // 8).to(dtype=weight_dtype)
 
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(latents)
@@ -702,8 +727,9 @@ def main():
                 # concatenate the noised latents with the mask and the masked latents
                 latent_model_input = torch.cat([noisy_latents, mask, masked_latents], dim=1)
 
+                # Use precomputed prompt
                 # Get the text embedding for conditioning
-                encoder_hidden_states = text_encoder(batch["input_ids"])[0]
+                # encoder_hidden_states = text_encoder(batch["input_ids"])[0]
 
                 # Predict the noise residual
                 noise_pred = unet(latent_model_input, timesteps, encoder_hidden_states).sample
@@ -758,7 +784,7 @@ def main():
 
         accelerator.wait_for_everyone()
 
-    # Create the pipeline using using the trained modules and save it.
+    # Create the pipeline using the trained modules and save it.
     if accelerator.is_main_process:
         pipeline = StableDiffusionPipeline.from_pretrained(
             args.pretrained_model_name_or_path,

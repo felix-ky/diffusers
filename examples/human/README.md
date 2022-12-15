@@ -22,7 +22,9 @@ Then run the training script
 
 ## TODOs
 
+- [ ] implement inference
 - [ ] tune lr schedules and optimizer hyperparams
+- [ ] fix all TODOs left in the code
 - [ ] use whole the COCO Densepose dataset (by generating samples OTF)
 - [ ] instance-aware random crop
 - [ ] add uv coordinate conditions with densepose
